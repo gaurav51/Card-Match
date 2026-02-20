@@ -128,6 +128,7 @@ public class CardgameManager : MonoBehaviour
 
     public void ClearSave()
     {
+        Debug.Log("Clearing save data");
         PlayerPrefs.DeleteKey("CardGameSaveData");
     }
 
@@ -354,11 +355,21 @@ public class CardgameManager : MonoBehaviour
             lives--;
             GameEvents.OnLivesUpdate?.Invoke(lives);
 
+            // Camera shake effect on mismatch
+            if (mainCamera != null)
+            {
+                mainCamera.transform.DOComplete(); // Complete any ongoing shakes
+                mainCamera.transform.DOShakePosition(0.1f, 0.2f, 10, 90f, false, true);
+            }
+
             c1.CloseCardWait();
             c2.CloseCardWait();
         }
 
-        SaveGame();
+        if (matchedPairsCount < totalPairs)
+        {
+            SaveGame();
+        }
     }
 
     private void CheckWinCondition()
@@ -367,9 +378,9 @@ public class CardgameManager : MonoBehaviour
         {
             ClearSave();
             Debug.Log($"Level {level} Complete! Score: {score}, Final Combo: {combo}");
-             UpdateDataForNextLevel(); 
+            UpdateDataForNextLevel(); 
             DOVirtual.DelayedCall(1.5f, () =>{ 
-               
+                PlaySound(gameOverSound);
                 GameEvents.OnGameWin?.Invoke();
                 });
         }
