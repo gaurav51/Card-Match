@@ -7,6 +7,13 @@ public class CardInteractable : MonoBehaviour
     public CardType cardType;
     public bool canBeFlipped = true;
 
+    public Vector3 childPos = new Vector3(0.1f, 0, 0.1f);
+
+    void Start()
+    {
+        transform.GetChild(0).localPosition = childPos;
+    }
+
     void OnEnable()
     {
         cardState = CardState.Hidden;

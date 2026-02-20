@@ -40,6 +40,11 @@ public class CardgameManager : MonoBehaviour
 
     public int score = 0;
     public int combo = 0;
+    public int moves = 0;
+    public int lives = 3;
+    public int level = 1;
+    public int matchNumber = 1;
+    public int turnNumber = 1;
 
     private List<CardInteractable> currentlyFlipped = new List<CardInteractable>();
     private int matchedPairsCount = 0;
@@ -55,16 +60,17 @@ public class CardgameManager : MonoBehaviour
 
     void Start()
     {
+        level = PlayerPrefs.GetInt("PlayerLevel", 1);
+
         if (mainCamera == null)
             mainCamera = Camera.main;
 
         if (audioSource == null)
             audioSource = gameObject.AddComponent<AudioSource>();
 
-        LoadGameOrInitialize();
     }
 
-    void LoadGameOrInitialize()
+    public void LoadGameOrInitialize()
     {
         if (PlayerPrefs.HasKey("CardGameSaveData"))
         {
@@ -113,7 +119,20 @@ public class CardgameManager : MonoBehaviour
     {
         score = 0;
         combo = 0;
+        moves = 0;
+        turnNumber = 1;
+        UpdateAllUIEvents();
         GenerateGrid(rows, columns);
+    }
+
+    private void UpdateAllUIEvents()
+    {
+        GameEvents.OnScoreUpdate?.Invoke(score);
+        GameEvents.OnMovesUpdate?.Invoke(moves);
+        GameEvents.OnLivesUpdate?.Invoke(lives);
+        GameEvents.OnLevelUpdate?.Invoke(level);
+        GameEvents.OnMatchNumberUpdated?.Invoke(matchNumber);
+        GameEvents.OnTurnNumberUpdated?.Invoke(turnNumber);
     }
 
     public void GenerateGrid(int r, int c)
@@ -242,6 +261,7 @@ public class CardgameManager : MonoBehaviour
 
         matchedPairsCount /= 2;
         currentlyFlipped.Clear();
+        UpdateAllUIEvents();
         AdjustCameraSize(data.rows, data.columns);
     }
 
@@ -274,10 +294,16 @@ public class CardgameManager : MonoBehaviour
 
     private void CompareCards(CardInteractable c1, CardInteractable c2)
     {
+        moves++;
+        turnNumber++;
+        GameEvents.OnMovesUpdate?.Invoke(moves);
+        GameEvents.OnTurnNumberUpdated?.Invoke(turnNumber);
+
         if (c1.cardType == c2.cardType)
         {
             combo++;
             score += 10 * combo;
+            GameEvents.OnScoreUpdate?.Invoke(score);
 
             if (combo > 1)
             {
@@ -299,6 +325,10 @@ public class CardgameManager : MonoBehaviour
             PlaySound(mismatchSound);
             combo = 0;
             score = Mathf.Max(0, score - 2);
+            GameEvents.OnScoreUpdate?.Invoke(score);
+            
+            lives--;
+            GameEvents.OnLivesUpdate?.Invoke(lives);
 
             c1.CloseCardWait();
             c2.CloseCardWait();
@@ -311,10 +341,38 @@ public class CardgameManager : MonoBehaviour
     {
         if (matchedPairsCount >= totalPairs)
         {
-            PlaySound(gameOverSound);
             ClearSave();
-            Debug.Log($"Game Over! Score: {score}, Final Combo: {combo}");
+            Debug.Log($"Level {level} Complete! Score: {score}, Final Combo: {combo}");
+            DOVirtual.DelayedCall(1.5f, NextLevel);
         }
+    }
+
+    private void NextLevel()
+    {
+        level++;
+        PlayerPrefs.SetInt("PlayerLevel", level);
+        PlayerPrefs.Save();
+        
+        Random.InitState(System.DateTime.Now.Millisecond + level * 1000);
+
+        int newRows = Random.Range(2, 7);
+        int newCols = Random.Range(2, 7);
+        
+        if ((newRows * newCols) % 2 != 0)
+        {
+            newCols++;
+            if (newCols > 6) newCols -= 2;
+        }
+
+        rows = newRows;
+        columns = newCols;
+
+        moves = 0;
+        turnNumber = 1;
+        combo = 0;
+
+        UpdateAllUIEvents();
+        GenerateGrid(rows, columns);
     }
 
     public void PlaySound(AudioClip clip)
