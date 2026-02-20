@@ -36,6 +36,7 @@ public class CardgameManager : MonoBehaviour
     public AudioClip matchSound;
     public AudioClip mismatchSound;
     public AudioClip gameOverSound;
+    public AudioClip comboSound;
 
     public int score = 0;
     public int combo = 0;
@@ -275,9 +276,17 @@ public class CardgameManager : MonoBehaviour
     {
         if (c1.cardType == c2.cardType)
         {
-            PlaySound(matchSound);
             combo++;
             score += 10 * combo;
+
+            if (combo > 1)
+            {
+                PlaySound(comboSound);
+            }
+            else
+            {
+                PlaySound(matchSound);
+            }
 
             c1.Match();
             c2.Match();
