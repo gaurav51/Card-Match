@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using DG.Tweening;
 using UnityEngine;
 
+#region Memento Pattern (Save Data)
 [System.Serializable]
 public class GameSaveData
 {
@@ -16,18 +17,20 @@ public class GameSaveData
     public List<int> gridCardTypes;
     public List<bool> gridCardMatched;
 }
+#endregion
 
 public class CardgameManager : MonoBehaviour
 {
-    public List<CardInteractable> cardPrefabs;
-    public List<CardInteractable> cards;
+    [Header("Singleton")]
     public static CardgameManager Instance;
 
+    [Header("Dependencies")]
+    public List<CardInteractable> cardPrefabs;
+    public List<CardInteractable> cards;
+    
     [Header("Grid Settings")]
-    [Range(2, 6)]
-    public int rows = 2;
-    [Range(2, 6)]
-    public int columns = 2;
+    [Range(2, 6)] public int rows = 2;
+    [Range(2, 6)] public int columns = 2;
     public float spacing = 1.2f;
 
     [Header("Camera Settings")]
@@ -42,6 +45,8 @@ public class CardgameManager : MonoBehaviour
     public AudioClip gameOverSound;
     public AudioClip comboSound;
 
+    // Public state for inspector/external viewing
+    [Header("Game State")]
     public int score = 0;
     public int combo = 0;
     public int moves = 0;
@@ -54,99 +59,75 @@ public class CardgameManager : MonoBehaviour
     private int matchedPairsCount = 0;
     private int totalPairs;
 
+    // Services via Facade/Composition
+    private GridFactory gridFactory;
+    private SaveSystem saveSystem;
+    private AudioController audioController;
+
     void Awake()
     {
-        if (Instance == null)
-            Instance = this;
-        else
-            Destroy(gameObject);
+        if (Instance == null) Instance = this;
+        else Destroy(gameObject);
+
+        // Initialize Pattern Components
+        gridFactory = new GridFactory(this);
+        saveSystem = new SaveSystem(this);
+        audioController = new AudioController(this);
     }
 
     void Start()
     {
         level = PlayerPrefs.GetInt("PlayerLevel", 1);
-
-        if (mainCamera == null)
-            mainCamera = Camera.main;
-
-        if (audioSource == null)
-            audioSource = gameObject.AddComponent<AudioSource>();
-
+        if (mainCamera == null) mainCamera = Camera.main;
+        if (audioSource == null) audioSource = gameObject.AddComponent<AudioSource>();
     }
+
+    // --- FACADE METHODS (Used by UI) ---
 
     public void LoadGameOrInitialize()
     {
-        if (PlayerPrefs.HasKey("CardGameSaveData"))
+        if (!saveSystem.TryLoadGame())
         {
-            string json = PlayerPrefs.GetString("CardGameSaveData");
-            GameSaveData data = JsonUtility.FromJson<GameSaveData>(json);
-            if (data != null && data.gridCardTypes.Count == data.rows * data.columns)
-            {
-                score = data.score;
-                combo = data.combo;
-                moves = data.moves;
-                lives = data.lives;
-                turnNumber = data.turnNumber;
-                matchNumber = data.matchNumber;
-                
-                // If lives ever somehow dropped to <=0 in save, restore to 3
-                if (lives <= 0) lives = 3; 
-
-                RestoreGrid(data);
-                return;
-            }
+            InitializeCardSetup();
         }
-        InitializeCardSetup();
     }
 
     public void SaveGame()
     {
-        GameSaveData data = new GameSaveData
-        {
-            rows = rows,
-            columns = columns,
-            score = score,
-            combo = combo,
-            moves = moves,
-            lives = lives,
-            turnNumber = turnNumber,
-            matchNumber = matchNumber,
-            gridCardTypes = new List<int>(),
-            gridCardMatched = new List<bool>()
-        };
-
-        foreach (var c in cards)
-        {
-            data.gridCardTypes.Add((int)c.cardType);
-            data.gridCardMatched.Add(c.cardState == CardState.Matched);
-        }
-
-        string json = JsonUtility.ToJson(data);
-        PlayerPrefs.SetString("CardGameSaveData", json);
-        PlayerPrefs.Save();
+        saveSystem.SaveGame();
     }
 
     public void ClearSave()
     {
-        Debug.Log("Clearing save data");
-        PlayerPrefs.DeleteKey("CardGameSaveData");
+        saveSystem.ClearSave();
     }
 
-    void InitializeCardSetup()
+    public void NextLevel()
+    {
+        GenerateGrid(rows, columns);
+    }
+
+    // --- CORE GAME LOOP & STATE MANAGEMENT ---
+
+    private void InitializeCardSetup()
+    {
+        ResetGameState();
+        UpdateGridSizeForLevel(level);
+        UpdateAllUIEvents();
+        GenerateGrid(rows, columns);
+    }
+
+    private void ResetGameState()
     {
         score = 0;
         combo = 0;
         moves = 0;
         turnNumber = 1;
         matchNumber = 0;
-        
-        UpdateGridSizeForLevel(level);
-
-        UpdateAllUIEvents();
-        GenerateGrid(rows, columns);
+        lives = 3; 
     }
 
-    private void UpdateAllUIEvents()
+    public void UpdateAllUIEvents()
     {
         GameEvents.OnScoreUpdate?.Invoke(score);
         GameEvents.OnMovesUpdate?.Invoke(moves);
@@ -156,159 +137,40 @@ public class CardgameManager : MonoBehaviour
         GameEvents.OnTurnNumberUpdated?.Invoke(turnNumber);
     }
 
+    // --- GRID OPERATIONS DELEGATED TO FACTORY ---
+
     public void GenerateGrid(int r, int c)
     {
-        float startX = -(c - 1) * spacing / 2f;
-        float startY = (r - 1) * spacing / 2f;
-
-        int totalExpectedCards = r * c;
-        totalPairs = totalExpectedCards / 2;
-        matchedPairsCount = 0;
-
-        List<CardInteractable> cardsToInstantiate = new List<CardInteractable>();
-        int pairsCount = totalExpectedCards / 2;
-
-        for (int i = 0; i < pairsCount; i++)
-        {
-            if (cardPrefabs == null || cardPrefabs.Count == 0) break;
-            CardInteractable prefab = cardPrefabs[i % cardPrefabs.Count];
-            cardsToInstantiate.Add(prefab);
-            cardsToInstantiate.Add(prefab);
-        }
-
-        if (cardsToInstantiate.Count < totalExpectedCards && cardPrefabs != null && cardPrefabs.Count > 0)
-        {
-            cardsToInstantiate.Add(cardPrefabs[0]);
-        }
-
-        for (int i = 0; i < cardsToInstantiate.Count; i++)
-        {
-            CardInteractable temp = cardsToInstantiate[i];
-            int randomIndex = Random.Range(i, cardsToInstantiate.Count);
-            cardsToInstantiate[i] = cardsToInstantiate[randomIndex];
-            cardsToInstantiate[randomIndex] = temp;
-        }
-
-        if (cards == null) cards = new List<CardInteractable>();
-
-        foreach (var card in cards)
-            if (card != null) Destroy(card.gameObject);
-        cards.Clear();
-
-        for (int i = 0; i < totalExpectedCards; i++)
-        {
-            int row = i / c;
-            int col = i % c;
-
-            float posX = startX + col * spacing;
-            float posY = startY - row * spacing;
-
-            Vector3 cardPos = new Vector3(posX, posY, 0f);
-
-            if (i < cardsToInstantiate.Count)
-            {
-                CardInteractable newCard = Instantiate(cardsToInstantiate[i], cardPos, Quaternion.identity);
-                newCard.transform.parent = this.transform;
-                newCard.InitializeCard();
-                cards.Add(newCard);
-            }
-        }
-
+        gridFactory.GenerateGrid(r, c);
         currentlyFlipped.Clear();
         SaveGame();
-        AdjustCameraSize(r, c);
     }
 
     public void RestoreGrid(GameSaveData data)
     {
-        float startX = -(data.columns - 1) * spacing / 2f;
-        float startY = (data.rows - 1) * spacing / 2f;
-
-        this.rows = data.rows;
-        this.columns = data.columns;
-
-        int totalExpectedCards = data.rows * data.columns;
-        totalPairs = totalExpectedCards / 2;
-        matchedPairsCount = 0;
-
-        if (cards == null) cards = new List<CardInteractable>();
-        foreach (var card in cards)
-            if (card != null) Destroy(card.gameObject);
-        cards.Clear();
-
-        for (int i = 0; i < totalExpectedCards; i++)
-        {
-            int row = i / data.columns;
-            int col = i % data.columns;
-
-            float posX = startX + col * spacing;
-            float posY = startY - row * spacing;
-
-            Vector3 cardPos = new Vector3(posX, posY, 0f);
-
-            CardInteractable prefab = null;
-            if (cardPrefabs != null && cardPrefabs.Count > 0)
-            {
-                foreach (var p in cardPrefabs)
-                {
-                    if ((int)p.cardType == data.gridCardTypes[i])
-                    {
-                        prefab = p;
-                        break;
-                    }
-                }
-                if (prefab == null) prefab = cardPrefabs[0];
-            }
-
-            if (prefab != null)
-            {
-                CardInteractable newCard = Instantiate(prefab, cardPos, Quaternion.identity);
-                newCard.transform.parent = this.transform;
-                newCard.cardType = (CardType)data.gridCardTypes[i];
-
-                if (data.gridCardMatched[i])
-                {
-                    newCard.ForceMatch();
-                    matchedPairsCount++; // Note: this increments per card, not per pair
-                }
-                else
-                {
-                    newCard.InitializeCard();
-                }
-
-                cards.Add(newCard);
-            }
-        }
-
-        matchedPairsCount /= 2;
-        matchNumber = matchedPairsCount;
-        currentlyFlipped.Clear();
+        gridFactory.RestoreGrid(data);
         UpdateAllUIEvents();
-        AdjustCameraSize(data.rows, data.columns);
     }
 
-    public void AdjustCameraSize(int r, int c)
+    private void UpdateGridSizeForLevel(int currentLevel)
     {
-        if (mainCamera == null) return;
-        float targetHeight = r * spacing;
-        float targetWidth = c * spacing;
-        float screenAspect = (float)Screen.width / Screen.height;
-        float sizeFromHeight = targetHeight / 2f;
-        float sizeFromWidth = targetWidth / (2f * screenAspect);
-        mainCamera.orthographicSize = Mathf.Max(sizeFromHeight, sizeFromWidth) + cameraPadding;
+        Vector2Int size = gridFactory.GetGridSizeForLevel(currentLevel);
+        rows = size.x;
+        columns = size.y;
     }
+
+    // --- GAMEPLAY CONTROLLER LOGIC ---
 
     public void CardFlipped(CardInteractable card)
     {
-        PlaySound(flipSound);
+        audioController.PlaySound(flipSound);
         currentlyFlipped.Add(card);
 
         if (currentlyFlipped.Count >= 2)
         {
             CardInteractable c1 = currentlyFlipped[0];
             CardInteractable c2 = currentlyFlipped[1];
-            currentlyFlipped.RemoveAt(0);
-            currentlyFlipped.RemoveAt(0);
+            currentlyFlipped.Clear(); // Clears both instantly without needing RemoveAt twice
 
             DOVirtual.DelayedCall(0.5f, () => CompareCards(c1, c2));
         }
@@ -322,54 +184,60 @@ public class CardgameManager : MonoBehaviour
         GameEvents.OnTurnNumberUpdated?.Invoke(turnNumber);
 
         if (c1.cardType == c2.cardType)
-        {
-            combo++;
-            score += 10 * combo;
-            matchNumber++;
-            GameEvents.OnScoreUpdate?.Invoke(score);
-            GameEvents.OnMatchNumberUpdated?.Invoke(matchNumber);
-
-            if (combo > 1)
-            {
-                GameEvents.OnComboUpdate?.Invoke(combo);
-                PlaySound(comboSound);
-            }
-            else
-            {
-                PlaySound(matchSound);
-            }
-
-            c1.Match();
-            c2.Match();
-
-            matchedPairsCount++;
-            CheckWinCondition();
-        }
+            HandleMatch(c1, c2);
         else
-        {
-            PlaySound(mismatchSound);
-            combo = 0;
-            score = Mathf.Max(0, score - 2);
-            GameEvents.OnScoreUpdate?.Invoke(score);
-            
-            lives--;
-            GameEvents.OnLivesUpdate?.Invoke(lives);
-
-            // Camera shake effect on mismatch
-            if (mainCamera != null)
-            {
-                mainCamera.transform.DOComplete(); // Complete any ongoing shakes
-                mainCamera.transform.DOShakePosition(0.1f, 0.2f, 10, 90f, false, true);
-            }
-
-            c1.CloseCardWait();
-            c2.CloseCardWait();
-        }
+            HandleMismatch(c1, c2);
 
         if (matchedPairsCount < totalPairs)
         {
             SaveGame();
         }
+    }
+
+    private void HandleMatch(CardInteractable c1, CardInteractable c2)
+    {
+        combo++;
+        score += 10 * combo;
+        matchNumber++;
+        matchedPairsCount++;
+
+        GameEvents.OnScoreUpdate?.Invoke(score);
+        GameEvents.OnMatchNumberUpdated?.Invoke(matchNumber);
+
+        if (combo > 1)
+        {
+            GameEvents.OnComboUpdate?.Invoke(combo);
+            audioController.PlaySound(comboSound);
+        }
+        else
+        {
+            audioController.PlaySound(matchSound);
+        }
+
+        c1.Match();
+        c2.Match();
+
+        CheckWinCondition();
+    }
+
+    private void HandleMismatch(CardInteractable c1, CardInteractable c2)
+    {
+        audioController.PlaySound(mismatchSound);
+        combo = 0;
+        score = Mathf.Max(0, score - 2);
+        lives--;
+
+        GameEvents.OnScoreUpdate?.Invoke(score);
+        GameEvents.OnLivesUpdate?.Invoke(lives);
+
+        if (mainCamera != null)
+        {
+            mainCamera.transform.DOComplete();
+            mainCamera.transform.DOShakePosition(0.1f, 0.2f, 10, 90f, false, true);
+        }
+
+        c1.CloseCardWait();
+        c2.CloseCardWait();
     }
 
     private void CheckWinCondition()
@@ -379,10 +247,11 @@ public class CardgameManager : MonoBehaviour
             ClearSave();
             Debug.Log($"Level {level} Complete! Score: {score}, Final Combo: {combo}");
             UpdateDataForNextLevel(); 
-            DOVirtual.DelayedCall(1.5f, () =>{ 
-                PlaySound(gameOverSound);
+            
+            DOVirtual.DelayedCall(1.5f, () => { 
+                audioController.PlaySound(gameOverSound);
                 GameEvents.OnGameWin?.Invoke();
-                });
+            });
         }
     }
 
@@ -393,7 +262,7 @@ public class CardgameManager : MonoBehaviour
         PlayerPrefs.Save();
         
         UpdateGridSizeForLevel(level);
-
+        
         moves = 0;
         turnNumber = 1;
         combo = 0;
@@ -402,48 +271,245 @@ public class CardgameManager : MonoBehaviour
         UpdateAllUIEvents();
     }
 
-    public void NextLevel()
+    // Allow components to sync pair tracking
+    public void SetGridPairs(int pairs, int matchedCount)
     {
-        GenerateGrid(rows, columns);
+        totalPairs = pairs;
+        this.matchedPairsCount = matchedCount;
+        matchNumber = matchedCount;
+    }
+}
+
+#region Design Patterns implementation (Factory, Save/Memento, Audio Controller)
+
+public class GridFactory
+{
+    private CardgameManager ctx;
+
+    public GridFactory(CardgameManager context)
+    {
+        ctx = context;
     }
 
-    private void UpdateGridSizeForLevel(int currentLevel)
+    public void GenerateGrid(int r, int c)
     {
-        // Define grid sizes (Rows, Columns). Must result in an even total number of cards.
+        float startX = -(c - 1) * ctx.spacing / 2f;
+        float startY = (r - 1) * ctx.spacing / 2f;
+
+        int totalExpectedCards = r * c;
+        int totalPairs = totalExpectedCards / 2;
+        ctx.SetGridPairs(totalPairs, 0);
+
+        List<CardInteractable> cardsToInstantiate = new List<CardInteractable>();
+
+        for (int i = 0; i < totalPairs; i++)
+        {
+            if (ctx.cardPrefabs == null || ctx.cardPrefabs.Count == 0) break;
+            CardInteractable prefab = ctx.cardPrefabs[i % ctx.cardPrefabs.Count];
+            cardsToInstantiate.Add(prefab);
+            cardsToInstantiate.Add(prefab);
+        }
+
+        if (cardsToInstantiate.Count < totalExpectedCards && ctx.cardPrefabs != null && ctx.cardPrefabs.Count > 0)
+            cardsToInstantiate.Add(ctx.cardPrefabs[0]);
+
+        // Shuffle
+        for (int i = 0; i < cardsToInstantiate.Count; i++)
+        {
+            CardInteractable temp = cardsToInstantiate[i];
+            int randomIndex = Random.Range(i, cardsToInstantiate.Count);
+            cardsToInstantiate[i] = cardsToInstantiate[randomIndex];
+            cardsToInstantiate[randomIndex] = temp;
+        }
+
+        ClearExistingCards();
+
+        for (int i = 0; i < totalExpectedCards; i++)
+        {
+            int row = i / c;
+            int col = i % c;
+
+            Vector3 cardPos = new Vector3(startX + col * ctx.spacing, startY - row * ctx.spacing, 0f);
+
+            if (i < cardsToInstantiate.Count)
+            {
+                CardInteractable newCard = Object.Instantiate(cardsToInstantiate[i], cardPos, Quaternion.identity);
+                newCard.transform.parent = ctx.transform;
+                newCard.InitializeCard();
+                ctx.cards.Add(newCard);
+            }
+        }
+
+        AdjustCameraSize(r, c);
+    }
+
+    public void RestoreGrid(GameSaveData data)
+    {
+        float startX = -(data.columns - 1) * ctx.spacing / 2f;
+        float startY = (data.rows - 1) * ctx.spacing / 2f;
+
+        ctx.rows = data.rows;
+        ctx.columns = data.columns;
+
+        int totalExpectedCards = data.rows * data.columns;
+        int totalPairs = totalExpectedCards / 2;
+        int restoredMatchedCount = 0;
+
+        ClearExistingCards();
+
+        for (int i = 0; i < totalExpectedCards; i++)
+        {
+            int row = i / data.columns;
+            int col = i % data.columns;
+
+            Vector3 cardPos = new Vector3(startX + col * ctx.spacing, startY - row * ctx.spacing, 0f);
+
+            CardInteractable prefab = null;
+            if (ctx.cardPrefabs != null && ctx.cardPrefabs.Count > 0)
+            {
+                foreach (var p in ctx.cardPrefabs)
+                {
+                    if ((int)p.cardType == data.gridCardTypes[i])
+                    {
+                        prefab = p;
+                        break;
+                    }
+                }
+                if (prefab == null) prefab = ctx.cardPrefabs[0];
+            }
+
+            if (prefab != null)
+            {
+                CardInteractable newCard = Object.Instantiate(prefab, cardPos, Quaternion.identity);
+                newCard.transform.parent = ctx.transform;
+                newCard.cardType = (CardType)data.gridCardTypes[i];
+
+                if (data.gridCardMatched[i])
+                {
+                    newCard.ForceMatch();
+                    restoredMatchedCount++;
+                }
+                else
+                {
+                    newCard.InitializeCard();
+                }
+
+                ctx.cards.Add(newCard);
+            }
+        }
+
+        ctx.SetGridPairs(totalPairs, restoredMatchedCount / 2);
+        AdjustCameraSize(data.rows, data.columns);
+    }
+
+    private void ClearExistingCards()
+    {
+        if (ctx.cards == null) ctx.cards = new List<CardInteractable>();
+        foreach (var card in ctx.cards)
+            if (card != null) Object.Destroy(card.gameObject);
+        ctx.cards.Clear();
+    }
+
+    private void AdjustCameraSize(int r, int c)
+    {
+        if (ctx.mainCamera == null) return;
+        float targetHeight = r * ctx.spacing;
+        float targetWidth = c * ctx.spacing;
+        float screenAspect = (float)Screen.width / Screen.height;
+        ctx.mainCamera.orthographicSize = Mathf.Max(targetHeight / 2f, targetWidth / (2f * screenAspect)) + ctx.cameraPadding;
+    }
+
+    public Vector2Int GetGridSizeForLevel(int currentLevel)
+    {
         int[,] gridSizes = new int[,] 
         {
-            {2, 2}, // Lvl 1: 4 cards
-            {2, 2}, // Lvl 2: 4 cards
-            {3, 2}, // Lvl 3: 6 cards
-            {3, 2}, // Lvl 4: 6 cards
-            {4, 2}, // Lvl 5: 8 cards
-            {4, 2}, // Lvl 6: 8 cards
-            {5, 2}, // Lvl 7: 10 cards
-            {5, 2}, // Lvl 8: 10 cards
-            {4, 3}, // Lvl 9: 12 cards
-            {4, 3}, // Lvl 10: 12 cards
-            {7, 2}, // Lvl 11: 14 cards
-            {7, 2}, // Lvl 12: 14 cards
-            {4, 4}, // Lvl 13: 16 cards
-            {4, 4}, // Lvl 14: 16 cards
-            {6, 3}, // Lvl 15: 18 cards
-            {6, 3}, // Lvl 16: 18 cards
-            {5, 4}, // Lvl 17: 20 cards
-            {5, 4}, // Lvl 18: 20 cards
-            {6, 4}, // Lvl 19: 24 cards
-            {6, 4}, // Lvl 20: 24 cards
-            {6, 5}, // Lvl 21: 30 cards
-            {6, 6}  // Lvl 22+: 36 cards
+            {2, 2}, {2, 2}, {3, 2}, {3, 2}, {4, 2}, {4, 2}, {5, 2}, {5, 2}, 
+            {4, 3}, {4, 3}, {7, 2}, {7, 2}, {4, 4}, {4, 4}, {6, 3}, {6, 3}, 
+            {5, 4}, {5, 4}, {6, 4}, {6, 4}, {6, 5}, {6, 6}  
         };
 
         int index = Mathf.Clamp(currentLevel - 1, 0, gridSizes.GetLength(0) - 1);
-        rows = gridSizes[index, 0];
-        columns = gridSizes[index, 1];
+        return new Vector2Int(gridSizes[index, 0], gridSizes[index, 1]);
+    }
+}
+
+public class SaveSystem
+{
+    private CardgameManager ctx;
+    private const string SaveKey = "CardGameSaveData";
+
+    public SaveSystem(CardgameManager context)
+    {
+        ctx = context;
+    }
+
+    public bool TryLoadGame()
+    {
+        if (PlayerPrefs.HasKey(SaveKey))
+        {
+            string json = PlayerPrefs.GetString(SaveKey);
+            GameSaveData data = JsonUtility.FromJson<GameSaveData>(json);
+            
+            if (data != null && data.gridCardTypes.Count == data.rows * data.columns)
+            {
+                ctx.score = data.score;
+                ctx.combo = data.combo;
+                ctx.moves = data.moves;
+                ctx.lives = data.lives <= 0 ? 3 : data.lives; // Restores lives correctly 
+                ctx.turnNumber = data.turnNumber;
+                
+                ctx.RestoreGrid(data);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public void SaveGame()
+    {
+        GameSaveData data = new GameSaveData
+        {
+            rows = ctx.rows,
+            columns = ctx.columns,
+            score = ctx.score,
+            combo = ctx.combo,
+            moves = ctx.moves,
+            lives = ctx.lives,
+            turnNumber = ctx.turnNumber,
+            matchNumber = ctx.matchNumber,
+            gridCardTypes = new List<int>(),
+            gridCardMatched = new List<bool>()
+        };
+
+        foreach (var c in ctx.cards)
+        {
+            data.gridCardTypes.Add((int)c.cardType);
+            data.gridCardMatched.Add(c.cardState == CardState.Matched);
+        }
+
+        PlayerPrefs.SetString(SaveKey, JsonUtility.ToJson(data));
+        PlayerPrefs.Save();
+    }
+
+    public void ClearSave()
+    {
+        PlayerPrefs.DeleteKey(SaveKey);
+    }
+}
+
+public class AudioController
+{
+    private CardgameManager ctx;
+
+    public AudioController(CardgameManager context)
+    {
+        ctx = context;
     }
 
     public void PlaySound(AudioClip clip)
     {
-        if (clip != null && audioSource != null)
-            audioSource.PlayOneShot(clip);
+        if (clip != null && ctx.audioSource != null)
+            ctx.audioSource.PlayOneShot(clip);
     }
 }
+#endregion
